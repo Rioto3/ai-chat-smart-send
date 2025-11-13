@@ -12,7 +12,7 @@
     return !!editor && !!target && editor.contains(target);
   }
 
-  // テキストを戻す（Shift+Ctrl/Cmd 用）
+  // テキストを復元
   function restoreEditorText(text) {
     const editor = getEditor();
     if (!editor) return;
@@ -23,19 +23,30 @@
     editor.appendChild(p);
   }
 
-  // ========= ① addEventListener をフック =========
+  // 送信ボタンを探す（Ctrl+Enterが送れているボタンと同じ）
+  function findSendButton() {
+    const selectors = [
+      '[data-testid="composer-send-button"]',
+      '[data-testid="send-button"]',
+      '#composer-submit-button'
+    ];
+    for (const sel of selectors) {
+      const btn = document.querySelector(sel);
+      if (btn) return btn;
+    }
+    return null;
+  }
+
+  // ========= ① addEventListener をフックして「Enter単体送信」を潰す =========
   const originalAddEventListener = EventTarget.prototype.addEventListener;
 
   EventTarget.prototype.addEventListener = function (type, listener, options) {
-    // keydown 以外はそのまま
     if (type !== "keydown" || typeof listener !== "function") {
       return originalAddEventListener.call(this, type, listener, options);
     }
 
-    // keydown 用にラップ
     const wrapped = function (event) {
       try {
-        // 日本語入力中は邪魔しない
         if (event.isComposing) {
           return listener.call(this, event);
         }
@@ -44,23 +55,20 @@
         const key = event.key;
         const ctrlOrMeta = isMac ? event.metaKey : event.ctrlKey;
 
-        // ----- ケース1: エディタ内の「Enter単体」 → ChatGPTに渡さない -----
+        // エディタ内の「Enter単体」は元リスナーに渡さない（送信させない）
         if (
           inEditor &&
           key === "Enter" &&
-          !ctrlOrMeta && // Ctrl/Cmd なし
+          !ctrlOrMeta &&
           !event.altKey &&
           !event.shiftKey
         ) {
-          // ここで送信を「根本的に」無効化
           event.preventDefault();
           event.stopImmediatePropagation();
-          return; // 元 listener を呼ばない
+          return;
         }
 
-        // ----- ケース2: Ctrl/Cmd + Enter → 通常送信させる -----
-        // → ここでは何もせず、そのまま元 listener に渡す
-
+        // それ以外（Ctrl/Cmd+Enter など）は素通し
         return listener.call(this, event);
       } catch (e) {
         console.warn("AIChat SmartSend wrapped listener error:", e);
@@ -71,14 +79,15 @@
     return originalAddEventListener.call(this, type, wrapped, options);
   };
 
-  // ========= ② Shift+Ctrl/Cmd+Enter でテキストを残す =========
-  document.addEventListener(
+  // ========= ② Shift+Ctrl/Cmd+Enter だけ自前で「送信＆復元」する =========
+  window.addEventListener(
     "keydown",
     (event) => {
       if (event.isComposing) return;
 
       const ctrlOrMeta = isMac ? event.metaKey : event.ctrlKey;
-      const isSmartSendKey = ctrlOrMeta && event.key === "Enter" && event.shiftKey;
+      const isSmartSendKey =
+        ctrlOrMeta && event.shiftKey && event.key === "Enter";
 
       if (!isSmartSendKey) return;
       if (!isInEditor(event.target)) return;
@@ -89,15 +98,27 @@
       const text = editor.innerText || "";
       if (!text.trim()) return;
 
-      // ここでは ChatGPT に普通に送信させる
-      // （上のラッパーで Ctrl/Cmd+Enter は通している）
+      // ChatGPT側に渡さない（自前で送信する）
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
 
-      // 送信後、少し待ってからテキストを復元
+      const btn = findSendButton();
+      if (!btn) {
+        console.warn("AIChat SmartSend: send button not found for SmartSend key");
+        return;
+      }
+
+      // FuncA: 送信ボタンをクリック
+      btn.click();
+      console.log("AIChat SmartSend: SmartSend key sent");
+
+      // 少し待ってからテキストを復元
       setTimeout(() => {
         restoreEditorText(text);
         console.log("AIChat SmartSend: text restored after SmartSend key");
-      }, 400);
+      }, 300);
     },
-    true
+    true // capture
   );
 })();
